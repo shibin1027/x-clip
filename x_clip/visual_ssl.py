@@ -118,9 +118,9 @@ def MLP(dim, projection_size, hidden_size = None):
         nn.BatchNorm1d(hidden_size),
         nn.ReLU(inplace = True),
         nn.Linear(hidden_size, projection_size)
-    )
+    )  # 256->4096->256
 
-def SimSiamMLP(dim, projection_size, hidden_size = 4096):
+def SimSiamMLP(dim, projection_size, hidden_size = 4096):   # dim=512,projection_size=256,hidden_size=4096
     hidden_size = default(hidden_size, projection_size * 2)
 
     return nn.Sequential(
@@ -132,12 +132,12 @@ def SimSiamMLP(dim, projection_size, hidden_size = 4096):
         nn.ReLU(inplace = True),
         nn.Linear(hidden_size, projection_size, bias = False),
         nn.BatchNorm1d(projection_size, affine = False)
-    )
+    )  # 512->4096->4096->256
 
 # a wrapper class for the base neural network
 # will manage the interception of the hidden layer output
 # and pipe it into the projecter and predictor nets
-
+# hidden_layer = -2, projection_size = 256, projection_hidden_size = 4096,
 class NetWrapper(nn.Module):
     def __init__(self, net, projection_size, projection_hidden_size = 4096, layer = -2):
         super().__init__()
@@ -173,7 +173,7 @@ class NetWrapper(nn.Module):
     @singleton('projector')
     def _get_projector(self, hidden):
         _, dim = hidden.shape
-        projector = SimSiamMLP(dim, self.projection_size, self.projection_hidden_size)
+        projector = SimSiamMLP(dim, self.projection_size, self.projection_hidden_size) # 512,256,4096
         return projector.to(hidden)
 
     def get_representation(self, x):
@@ -192,14 +192,15 @@ class NetWrapper(nn.Module):
         return hidden
 
     def forward(self, x, return_projection = True):
-        representation = self.get_representation(x)
+        # x: b,3,256,256
+        representation = self.get_representation(x)  # b,33,512
 
         if not return_projection:
             return representation
 
-        flattened_representation = rearrange(representation, '... d -> (...) d')
-        projector = self._get_projector(flattened_representation)
-        projection = projector(flattened_representation)
+        flattened_representation = rearrange(representation, '... d -> (...) d')  # b,33,512 -> b*33,512
+        projector = self._get_projector(flattened_representation) # model: 512-4096-4096-256
+        projection = projector(flattened_representation)  # b*33,512 -> b*33,256
         return projection, representation
 
 # main class
@@ -225,7 +226,7 @@ class SimSiam(nn.Module):
         self.augment2 = default(augment_fn2, self.augment1)
 
         self.online_encoder = NetWrapper(net, projection_size, projection_hidden_size, layer=hidden_layer)
-        self.online_predictor = MLP(projection_size, projection_size, projection_hidden_size)
+        self.online_predictor = MLP(projection_size, projection_size, projection_hidden_size) # 256,256,4096: 256-256
 
         # get device of network and make wrapper same device
         device = get_module_device(net)
@@ -235,6 +236,7 @@ class SimSiam(nn.Module):
         self.forward(torch.randn(2, channels, image_size, image_size, device=device))
 
     def forward(self, x):
+        # x: b,3,256,256
         assert not (self.training and x.shape[0] == 1), 'you must have greater than 1 sample when training, due to the batchnorm in the projection layer'
 
         image_one, image_two = self.augment1(x), self.augment2(x)
