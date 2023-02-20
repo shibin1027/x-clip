@@ -54,7 +54,7 @@ class MLM(nn.Module):
         self.mask_prob = mask_prob  # 0.15
         self.replace_prob = replace_prob   # 0.9
 
-        self.num_tokens = num_tokens
+        self.num_tokens = num_tokens  # 10000  mlm input [MASK] but don't output [MASK] so 10000
         self.random_token_prob = random_token_prob
 
         # token ids
@@ -72,7 +72,7 @@ class MLM(nn.Module):
         mask = get_mask_subset_with_prob(~no_mask, self.mask_prob)   # b,256
 
         # mask out any tokens to padding tokens that were not originally going to be masked
-        labels = seq.masked_fill(~mask, self.pad_token_id)
+        labels = seq.masked_fill(~mask, self.pad_token_id)   # b,256  where masked token filled with original token label, other filled with 0
 
         # mask seq with mask tokens with probability of `replace_prob` (keep tokens the same with probability 1 - replace_prob)
         masked_seq = seq.clone().detach()
@@ -91,14 +91,14 @@ class MLM(nn.Module):
 
         # [mask] seq
         replace_prob = prob_mask_like(seq, self.replace_prob)
-        masked_seq = masked_seq.masked_fill(mask * replace_prob, self.mask_token_id)
+        masked_seq = masked_seq.masked_fill(mask * replace_prob, self.mask_token_id)  # b,256  with masked token 2
 
         # get generator output and get mlm loss
-        embedding = self.transformer(masked_seq, **kwargs)
+        embedding = self.transformer(masked_seq, **kwargs)  # b,256 -> b,257,512 -> b,256,512
 
         # project to logits and remove CLS
-        logits = self.to_logits(embedding)
-        logits = logits[:, 1:]
+        logits = self.to_logits(embedding)   # b,257,10000
+        logits = logits[:, 1:]  # b,256,10000
 
         mlm_loss = F.cross_entropy(
             logits.transpose(1, 2),
