@@ -544,7 +544,7 @@ class CLIP(nn.Module):
 
         # text latent projection
 
-        self.to_text_latent = nn.Linear(dim_text, dim_latent, bias = False)
+        self.to_text_latent = nn.Linear(dim_text, dim_latent, bias = False)  # 512-512
 
         # image latent projection
 
@@ -552,13 +552,13 @@ class CLIP(nn.Module):
             assert use_all_token_embeds, 'must be using all token embeds for contrastive learning in order to downsampling'
 
             self.to_visual_latent = nn.Sequential(
-                RearrangeImage(),
+                RearrangeImage(),   # b (h w) c -> b c h w
                 nn.Conv2d(dim_image, dim_image, 4, stride = 2, padding = 1, bias = False, groups = dim_image),
                 nn.Conv2d(dim_image, dim_latent, 1),
                 Rearrange('b c h w -> b (h w) c')
-            )
+            )  
         else:
-            self.to_visual_latent = nn.Linear(dim_image, dim_latent, bias = False)
+            self.to_visual_latent = nn.Linear(dim_image, dim_latent, bias = False)  # 512-512
 
         # temperature
 
@@ -591,7 +591,8 @@ class CLIP(nn.Module):
         aug_text = None,                # augmented text (for multiview)
         aug_image = None                # augmented image (for multiview)
     ):
-        b, device = text.shape[0], text.device
+        # text:4,256  image:4,3,256,256
+        b, device = text.shape[0], text.device  # b=4
 
         # derive text mask
 
@@ -647,7 +648,7 @@ class CLIP(nn.Module):
             fn = self.text_transformer,
             args = text_args,
             freeze = freeze_text_encoder
-        )
+        )  # 4,257,512
 
         # depending on whether text is using causal mask, post process, moving eos token to the first position
 
@@ -674,37 +675,38 @@ class CLIP(nn.Module):
             fn = self.visual_transformer,
             args = (image,),
             freeze = freeze_image_encoder
-        )
+        )  # 4,33,512
 
         # early return of encodings, if needed (for DALL-E2)
 
         if return_encodings:
-            return enc_text, enc_image
+            return enc_text, enc_image  # 4,257,512  4,33,512
 
         # depending on whether to do fine-grained CLIP or not, select either all tokens, or CLS tokens only
 
         if self.use_all_token_embeds:
             assert enc_text.ndim == 3, 'encoded text must have 3 dimensions (batch, seq, features)'
             assert enc_image.ndim == 3, 'encoded image must have 3 dimensions (batch, seq [height x width], features)'
-            text_embeds = enc_text[:, 1:] if self.text_has_cls_token else enc_text
-            image_embeds = enc_image[:, 1:] if self.visual_has_cls_token else enc_image
+            text_embeds = enc_text[:, 1:] if self.text_has_cls_token else enc_text  # 4,256,512
+            image_embeds = enc_image[:, 1:] if self.visual_has_cls_token else enc_image  # 4,32,512
         else:
-            text_embeds = enc_text[:, 0] if enc_text.ndim == 3 else enc_text
-            image_embeds = enc_image[:, 0] if enc_image.ndim == 3 else enc_image
+            text_embeds = enc_text[:, 0] if enc_text.ndim == 3 else enc_text  # 4,512
+            image_embeds = enc_image[:, 0] if enc_image.ndim == 3 else enc_image  # 4,512
 
         # project to latents
 
-        text_latents = self.to_text_latent(text_embeds)
-        image_latents = self.to_visual_latent(image_embeds)
+        text_latents = self.to_text_latent(text_embeds)  # 4,512
+        image_latents = self.to_visual_latent(image_embeds)   # 4,512
         text_latents, image_latents = map(l2norm, (text_latents, image_latents))
 
         # calculate another set of latents for image to text (vs text to image)
         # proposed by CLOOB
+        # (image to text and text to image use separate latents)
 
         text_latents_extra, image_latents_extra = text_latents, image_latents
         if self.extra_latent_projection:
-            text_latents_extra = self.to_text_latent_extra(text_embeds)
-            image_latents_extra = self.to_visual_latent_extra(image_embeds)
+            text_latents_extra = self.to_text_latent_extra(text_embeds)  # 4,512
+            image_latents_extra = self.to_visual_latent_extra(image_embeds)  # 4,512
             text_latents_extra, image_latents_extra = map(l2norm, (text_latents_extra, image_latents_extra))
 
         # whether to early return latents
@@ -723,20 +725,20 @@ class CLIP(nn.Module):
 
         if not return_loss and self.use_all_token_embeds:
             einsum_args = (text_latents_extra, image_latents_extra) if self.extra_latent_projection and not text_to_image else (text_latents, image_latents)
-            return einsum('b t d, b i d -> b t i', *einsum_args) * temp
+            return einsum('b t d, b i d -> b t i', *einsum_args) * temp  
 
         if not return_loss and not self.use_all_token_embeds:
             einsum_args = (text_latents_extra, image_latents_extra) if self.extra_latent_projection and not text_to_image else (text_latents, image_latents)
-            return einsum('b d, b d -> b', *einsum_args) * temp
+            return einsum('b d, b d -> b', *einsum_args) * temp  # 4,512 * 4,512 -> 4
 
         # split out multiview dimension for text and images
 
-        text_latents = rearrange(text_latents, '(m b) ... -> m b ...', m = num_batch_texts)
-        image_latents = rearrange(image_latents, '(m b) ... -> m b ...', m = num_batch_images)
+        text_latents = rearrange(text_latents, '(m b) ... -> m b ...', m = num_batch_texts)  # 4,512 -> 1,4,512
+        image_latents = rearrange(image_latents, '(m b) ... -> m b ...', m = num_batch_images)  # 4,512 -> 1,4,512
 
         if self.extra_latent_projection:
-            text_latents_extra = rearrange(text_latents_extra, '(m b) ... -> m b ...', m = num_batch_texts)
-            image_latents_extra = rearrange(image_latents_extra, '(m b) ... -> m b ...', m = num_batch_images)
+            text_latents_extra = rearrange(text_latents_extra, '(m b) ... -> m b ...', m = num_batch_texts)  # 4,512 -> 1,4,512
+            image_latents_extra = rearrange(image_latents_extra, '(m b) ... -> m b ...', m = num_batch_images)  # 4,512 -> 1,4,512
 
         # contrastive loss
 
@@ -765,16 +767,16 @@ class CLIP(nn.Module):
             masked_sim = sim_image_to_text.masked_fill(~image_to_text_mask, max_neg_value(sim_image_to_text.dtype))
             image_to_text = reduce(reduce(masked_sim, '... t i -> ... i', 'max'), '... i -> ...', 'mean')
         else:
-            text_to_image = einsum('m t d, n i d -> m n t i', text_latents, image_latents) * temp
-            image_to_text = rearrange(text_to_image, '... t i -> ... i t')
+            text_to_image = einsum('m t d, n i d -> m n t i', text_latents, image_latents) * temp  # 1,4,512 * 1,4,512 -> 1,1,4,4
+            image_to_text = rearrange(text_to_image, '... t i -> ... i t')  # 1,1,4,4 -> 1,1,4,4
 
             if self.extra_latent_projection:
                 image_to_text = einsum('m t d, n i d -> m n i t', text_latents_extra, image_latents_extra) * temp
 
         # calculate loss
 
-        text_to_image = rearrange(text_to_image, 'm n ... -> (m n) ...')
-        image_to_text = rearrange(image_to_text, 'm n ... -> (m n) ...')
+        text_to_image = rearrange(text_to_image, 'm n ... -> (m n) ...')  # 1,1,4,4 -> 1,4,4
+        image_to_text = rearrange(image_to_text, 'm n ... -> (m n) ...')  # 1,1,4,4 -> 1,4,4
 
         # exponentiate
 
@@ -799,7 +801,8 @@ class CLIP(nn.Module):
 
         # calculate CL loss
 
-        cl_losses = (text_to_image_loss + image_to_text_loss) / 2
+        cl_losses = (text_to_image_loss + image_to_text_loss) / 2  # contrastive learning loss
+
 
         # get main CL loss vs multiview CL losses
 
@@ -816,6 +819,7 @@ class CLIP(nn.Module):
         loss = (cl_loss * cl_loss_weight) \
             + (text_ssl_loss * self.text_ssl_loss_weight) \
             + (image_ssl_loss * self.image_ssl_loss_weight)
+        # contrastive learning loss + mlm loss + simsiam loss
 
         # add multiview CL loss with weight
 
